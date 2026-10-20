@@ -22,10 +22,6 @@ import (
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	v1 "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	rekortilespb "github.com/sigstore/rekor-tiles/v2/pkg/generated/protobuf"
-	"github.com/sigstore/rekor/pkg/generated/models"
-	dsse_v001 "github.com/sigstore/rekor/pkg/types/dsse/v0.0.1"
-	hashedrekord_v001 "github.com/sigstore/rekor/pkg/types/hashedrekord/v0.0.1"
-	intoto_v002 "github.com/sigstore/rekor/pkg/types/intoto/v0.0.2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -386,9 +382,9 @@ func TestGetDssePayloadHash(t *testing.T) {
 		{
 			name: "dsse 0.0.1",
 			entry: &Entry{
-				rekorV1Entry: &dsse_v001.V001Entry{
-					DSSEObj: models.DSSEV001Schema{
-						PayloadHash: &models.DSSEV001SchemaPayloadHash{
+				rekorV1Entry: &dsseV001Entry{
+					DSSEObj: dsseV001Schema{
+						PayloadHash: &hashAlgValue{
 							Value: &payloadHashHex,
 						},
 					},
@@ -400,10 +396,10 @@ func TestGetDssePayloadHash(t *testing.T) {
 		{
 			name: "intoto 0.0.2",
 			entry: &Entry{
-				rekorV1Entry: &intoto_v002.V002Entry{
-					IntotoObj: models.IntotoV002Schema{
-						Content: &models.IntotoV002SchemaContent{
-							PayloadHash: &models.IntotoV002SchemaContentPayloadHash{
+				rekorV1Entry: &intotoV002Entry{
+					IntotoObj: intotoV002Schema{
+						Content: &intotoV002SchemaContent{
+							PayloadHash: &hashAlgValue{
 								Value: &payloadHashHex,
 							},
 						},
@@ -451,10 +447,10 @@ func TestGetHashedRekordDigest(t *testing.T) {
 		{
 			name: "hashedrekord 0.0.1",
 			entry: &Entry{
-				rekorV1Entry: &hashedrekord_v001.V001Entry{
-					HashedRekordObj: models.HashedrekordV001Schema{
-						Data: &models.HashedrekordV001SchemaData{
-							Hash: &models.HashedrekordV001SchemaDataHash{
+				rekorV1Entry: &hashedrekordV001Entry{
+					HashedRekordObj: hashedrekordV001Schema{
+						Data: &hashedrekordV001SchemaData{
+							Hash: &hashAlgValue{
 								Value:     &digestHex,
 								Algorithm: &algo,
 							},

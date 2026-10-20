@@ -48,8 +48,13 @@ import (
 	"github.com/sigstore/rekor/pkg/pki"
 	"github.com/sigstore/rekor/pkg/types"
 	dsseEntry "github.com/sigstore/rekor/pkg/types/dsse"
+	// pkg/tlog no longer imports these three, and their init registers
+	// the entry types this test CA builds.
+	_ "github.com/sigstore/rekor/pkg/types/dsse/v0.0.1"
 	"github.com/sigstore/rekor/pkg/types/hashedrekord"
+	_ "github.com/sigstore/rekor/pkg/types/hashedrekord/v0.0.1"
 	"github.com/sigstore/rekor/pkg/types/intoto"
+	_ "github.com/sigstore/rekor/pkg/types/intoto/v0.0.2"
 	"github.com/sigstore/rekor/pkg/types/rekord"
 	"github.com/sigstore/rekor/pkg/util"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
@@ -522,7 +527,11 @@ func (ca *VirtualSigstore) GenerateTlogEntry(leafCert *x509.Certificate, envelop
 			return nil, err
 		}
 	}
-	return tlog.NewEntry(rekorBodyRaw, integratedTime, logIndex, rekorLogIDRaw, set, inclusionProof) //nolint:staticcheck
+	var ip *tlog.RekorV1InclusionProof
+	if inclusionProof != nil {
+		ip = &tlog.RekorV1InclusionProof{Checkpoint: inclusionProof.Checkpoint, Hashes: inclusionProof.Hashes, LogIndex: inclusionProof.LogIndex, RootHash: inclusionProof.RootHash, TreeSize: inclusionProof.TreeSize}
+	}
+	return tlog.NewEntry(rekorBodyRaw, integratedTime, logIndex, rekorLogIDRaw, set, ip) //nolint:staticcheck
 }
 
 func (ca *VirtualSigstore) GetInclusionProof(rekorBodyRaw []byte) (*models.InclusionProof, error) {

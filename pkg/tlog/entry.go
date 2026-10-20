@@ -15,8 +15,6 @@
 package tlog
 
 import (
-	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -29,20 +27,12 @@ import (
 	"time"
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
-	"github.com/go-openapi/runtime"
-	"github.com/go-openapi/strfmt"
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	v1 "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	rekortilespb "github.com/sigstore/rekor-tiles/v2/pkg/generated/protobuf"
 	"github.com/sigstore/rekor-tiles/v2/pkg/note"
 	typesverifier "github.com/sigstore/rekor-tiles/v2/pkg/types/verifier"
 	"github.com/sigstore/rekor-tiles/v2/pkg/verify"
-	"github.com/sigstore/rekor/pkg/generated/models"
-	"github.com/sigstore/rekor/pkg/types"
-	dsse_v001 "github.com/sigstore/rekor/pkg/types/dsse/v0.0.1"
-	hashedrekord_v001 "github.com/sigstore/rekor/pkg/types/hashedrekord/v0.0.1"
-	intoto_v002 "github.com/sigstore/rekor/pkg/types/intoto/v0.0.2"
-	rekorVerify "github.com/sigstore/rekor/pkg/verify"
 	"github.com/sigstore/sigstore/pkg/signature"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -52,7 +42,7 @@ import (
 type Entry struct {
 	kind                 string
 	version              string
-	rekorV1Entry         types.EntryImpl
+	rekorV1Entry         rekorV1Entry
 	rekorV2Entry         *rekortilespb.Entry
 	signedEntryTimestamp []byte
 	tle                  *v1.TransparencyLogEntry
@@ -69,12 +59,8 @@ var ErrNilValue = errors.New("validation error: nil value in transaction log ent
 var ErrInvalidRekorV2Entry = errors.New("type error: object is not a Rekor v2 type, try parsing as Rekor v1")
 
 // Deprecated: use NewTlogEntry. NewEntry only parses a Rekor v1 entry.
-func NewEntry(body []byte, integratedTime int64, logIndex int64, logID []byte, signedEntryTimestamp []byte, inclusionProof *models.InclusionProof) (*Entry, error) {
-	pe, err := models.UnmarshalProposedEntry(bytes.NewReader(body), runtime.JSONConsumer())
-	if err != nil {
-		return nil, err
-	}
-	rekorEntry, err := types.UnmarshalEntry(pe)
+func NewEntry(body []byte, integratedTime int64, logIndex int64, logID []byte, signedEntryTimestamp []byte, inclusionProof *RekorV1InclusionProof) (*Entry, error) {
+	rekorEntry, err := unmarshalRekorV1Entry(body)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +75,8 @@ func NewEntry(body []byte, integratedTime int64, logIndex int64, logID []byte, s
 			IntegratedTime:    integratedTime,
 			CanonicalizedBody: body,
 		},
-		kind:    pe.Kind(),
-		version: rekorEntry.APIVersion(),
+		kind:    rekorV1Kind(rekorEntry),
+		version: rekorV1Version(rekorEntry),
 	}
 
 	if len(signedEntryTimestamp) > 0 {
@@ -125,7 +111,7 @@ func NewEntry(body []byte, integratedTime int64, logIndex int64, logID []byte, s
 
 func NewTlogEntry(tle *v1.TransparencyLogEntry) (*Entry, error) {
 	var rekorV2Entry *rekortilespb.Entry
-	var rekorV1Entry types.EntryImpl
+	var rekorV1Entry rekorV1Entry
 	var err error
 
 	body := tle.CanonicalizedBody
@@ -205,7 +191,7 @@ func ParseEntry(protoEntry *v1.TransparencyLogEntry) (entry *Entry, err error) {
 		signedEntryTimestamp = protoEntry.InclusionPromise.SignedEntryTimestamp
 	}
 
-	var inclusionProof *models.InclusionProof
+	var inclusionProof *RekorV1InclusionProof
 
 	if protoEntry.InclusionProof != nil {
 		var hashes []string
@@ -223,7 +209,7 @@ func ParseEntry(protoEntry *v1.TransparencyLogEntry) (entry *Entry, err error) {
 			return nil, fmt.Errorf("inclusion proof checkpoint empty")
 		}
 
-		inclusionProof = &models.InclusionProof{
+		inclusionProof = &RekorV1InclusionProof{
 			LogIndex:   new(protoEntry.InclusionProof.LogIndex),
 			RootHash:   &rootHash,
 			TreeSize:   new(protoEntry.InclusionProof.TreeSize),
@@ -247,24 +233,8 @@ func ParseEntry(protoEntry *v1.TransparencyLogEntry) (entry *Entry, err error) {
 
 func ValidateEntry(entry *Entry) error {
 	if entry.rekorV1Entry != nil {
-		switch e := entry.rekorV1Entry.(type) {
-		case *dsse_v001.V001Entry:
-			err := e.DSSEObj.Validate(strfmt.Default)
-			if err != nil {
-				return err
-			}
-		case *hashedrekord_v001.V001Entry:
-			err := e.HashedRekordObj.Validate(strfmt.Default)
-			if err != nil {
-				return err
-			}
-		case *intoto_v002.V002Entry:
-			err := e.IntotoObj.Validate(strfmt.Default)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unsupported entry type: %T", e)
+		if err := validateRekorV1(entry.rekorV1Entry); err != nil {
+			return err
 		}
 	}
 	if entry.rekorV2Entry != nil {
@@ -304,15 +274,15 @@ func (entry *Entry) IntegratedTime() time.Time {
 func (entry *Entry) Signature() []byte {
 	if entry.rekorV1Entry != nil {
 		switch e := entry.rekorV1Entry.(type) {
-		case *dsse_v001.V001Entry:
+		case *dsseV001Entry:
 			sigBytes, err := base64.StdEncoding.DecodeString(*e.DSSEObj.Signatures[0].Signature)
 			if err != nil {
 				return []byte{}
 			}
 			return sigBytes
-		case *hashedrekord_v001.V001Entry:
+		case *hashedrekordV001Entry:
 			return e.HashedRekordObj.Signature.Content
-		case *intoto_v002.V002Entry:
+		case *intotoV002Entry:
 			sigBytes, err := base64.StdEncoding.DecodeString(string(*e.IntotoObj.Content.Envelope.Signatures[0].Sig))
 			if err != nil {
 				return []byte{}
@@ -336,11 +306,11 @@ func (entry *Entry) PublicKey() any {
 	if entry.rekorV1Entry != nil {
 		var pemString []byte
 		switch e := entry.rekorV1Entry.(type) {
-		case *dsse_v001.V001Entry:
+		case *dsseV001Entry:
 			pemString = []byte(*e.DSSEObj.Signatures[0].Verifier)
-		case *hashedrekord_v001.V001Entry:
+		case *hashedrekordV001Entry:
 			pemString = []byte(e.HashedRekordObj.Signature.PublicKey.Content)
-		case *intoto_v002.V002Entry:
+		case *intotoV002Entry:
 			pemString = []byte(*e.IntotoObj.Content.Envelope.Signatures[0].PublicKey)
 		}
 		certBlock, _ := pem.Decode(pemString)
@@ -410,7 +380,7 @@ func (entry *Entry) GetHashedRekordDigest() (digest []byte, algorithm string, ok
 		return nil, "", false
 	}
 	if entry.rekorV1Entry != nil {
-		if e, ok := entry.rekorV1Entry.(*hashedrekord_v001.V001Entry); ok {
+		if e, ok := entry.rekorV1Entry.(*hashedrekordV001Entry); ok {
 			if e.HashedRekordObj.Data != nil && e.HashedRekordObj.Data.Hash != nil {
 				hashBytes, err := hex.DecodeString(*e.HashedRekordObj.Data.Hash.Value)
 				if err != nil {
@@ -439,7 +409,7 @@ func (entry *Entry) GetDssePayloadHash() (digest []byte, ok bool) {
 	}
 	if entry.rekorV1Entry != nil {
 		switch e := entry.rekorV1Entry.(type) {
-		case *dsse_v001.V001Entry:
+		case *dsseV001Entry:
 			if e.DSSEObj.PayloadHash.Value != nil {
 				hashStr := *e.DSSEObj.PayloadHash.Value
 				hashBytes, err := hex.DecodeString(hashStr)
@@ -448,7 +418,7 @@ func (entry *Entry) GetDssePayloadHash() (digest []byte, ok bool) {
 				}
 				return hashBytes, true
 			}
-		case *intoto_v002.V002Entry:
+		case *intotoV002Entry:
 			if e.IntotoObj.Content != nil && e.IntotoObj.Content.PayloadHash != nil && e.IntotoObj.Content.PayloadHash.Value != nil {
 				hashStr := *e.IntotoObj.Content.PayloadHash.Value
 				hashBytes, err := hex.DecodeString(hashStr)
@@ -465,38 +435,9 @@ func (entry *Entry) GetDssePayloadHash() (digest []byte, ok bool) {
 // VerifyInclusion verifies a Rekor v1-style checkpoint and the entry's inclusion in the Rekor v1 log.
 // Prefer verify.VerifyTlogEntry, which also compares the log entry against a provided bundle.
 func VerifyInclusion(entry *Entry, verifier signature.Verifier) error {
-	hashes := make([]string, len(entry.tle.InclusionProof.Hashes))
-	for i, b := range entry.tle.InclusionProof.Hashes {
-		hashes[i] = hex.EncodeToString(b)
-	}
-	rootHash := hex.EncodeToString(entry.tle.GetInclusionProof().GetRootHash())
-	logEntry := models.LogEntryAnon{
-		IntegratedTime: &entry.tle.IntegratedTime,
-		LogID:          new(string(entry.tle.GetLogId().KeyId)),
-		LogIndex:       new(entry.tle.GetInclusionProof().GetLogIndex()),
-		Body:           base64.StdEncoding.EncodeToString(entry.tle.GetCanonicalizedBody()),
-		Verification: &models.LogEntryAnonVerification{
-			InclusionProof: &models.InclusionProof{
-				Checkpoint: new(entry.tle.GetInclusionProof().GetCheckpoint().GetEnvelope()),
-				Hashes:     hashes,
-				LogIndex:   new(entry.tle.GetInclusionProof().GetLogIndex()),
-				RootHash:   &rootHash,
-				TreeSize:   new(entry.tle.GetInclusionProof().GetTreeSize()),
-			},
-			SignedEntryTimestamp: strfmt.Base64(entry.signedEntryTimestamp),
-		},
-	}
-	err := rekorVerify.VerifyInclusion(context.Background(), &logEntry)
-	if err != nil {
-		return err
-	}
-
-	err = rekorVerify.VerifyCheckpointSignature(&logEntry, verifier)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	ip := entry.tle.GetInclusionProof()
+	return verifyRekorV1Inclusion(entry.tle.GetCanonicalizedBody(), ip.GetLogIndex(), ip.GetTreeSize(),
+		ip.Hashes, ip.GetRootHash(), ip.GetCheckpoint().GetEnvelope(), verifier)
 }
 
 // VerifyCheckpointAndInclusion verifies a checkpoint and the entry's inclusion in the transparency log.
@@ -558,18 +499,6 @@ func VerifySET(entry *Entry, verifiers map[string]*root.TransparencyLog) error {
 	return nil
 }
 
-func unmarshalRekorV1Entry(body []byte) (types.EntryImpl, error) {
-	pe, err := models.UnmarshalProposedEntry(bytes.NewReader(body), runtime.JSONConsumer())
-	if err != nil {
-		return nil, err
-	}
-	rekorEntry, err := types.UnmarshalEntry(pe)
-	if err != nil {
-		return nil, err
-	}
-	return rekorEntry, nil
-}
-
 func unmarshalRekorV2Entry(body []byte) (*rekortilespb.Entry, error) {
 	logEntryBody := rekortilespb.Entry{}
 	if err := protojson.Unmarshal(body, &logEntryBody); err != nil {
@@ -589,4 +518,14 @@ func unmarshalRekorV2Entry(body []byte) (*rekortilespb.Entry, error) {
 	}
 
 	return &logEntryBody, nil
+}
+
+// RekorV1InclusionProof is the subset of rekor models.InclusionProof that the
+// deprecated NewEntry reads.
+type RekorV1InclusionProof struct {
+	Checkpoint *string
+	Hashes     []string
+	LogIndex   *int64
+	RootHash   *string
+	TreeSize   *int64
 }
